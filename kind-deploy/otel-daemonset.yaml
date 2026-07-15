@@ -1,0 +1,181 @@
+# OTel DaemonSet — in-cluster agent for kubeletstats, container logs, and k8s events
+#
+# Deploy into the kind cluster:
+#   kubectl apply -f kind-deploy/otel-daemonset.yaml
+#
+# One agent pod runs per node (kubeletstats + filelog).
+# k8sobjects (k8s Events) runs only on the control-plane node via nodeSelector
+# to avoid duplicate event streams from multiple agents.
+# Port 4318 must be host-exposed (docker-compose.override.yml handles this).
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-agent-config
+  namespace: otel-system
+data:
+  config.yaml: |
+    receivers:
+      kubeletstats:
+        collection_interval: 20s
+        auth_type: serviceAccount
+        endpoint: "${env:K8S_NODE_NAME}:10250"
+        insecure_skip_verify: true
+        metric_groups:
+          - node
+          - pod
+          - container
+
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        start_at: beginning
+        include_file_path: true
+        include_file_name: false
+
+      # k8s Events (CrashLoopBackOff, OOMKilled, image pull errors, etc.).
+      # Only active when K8S_EVENTS_ENABLED=true — set via env on the
+      # control-plane node pod only, preventing duplicate streams.
+      k8sobjects:
+        auth_type: serviceAccount
+        objects:
+          - name: events
+            mode: watch
+            namespaces: [default, kube-system, otel-demo, otel-system]
+            group: ""
+
+    processors:
+      batch:
+        timeout: 5s
+      resource/node:
+        attributes:
+          - key: k8s.node.name
+            value: "${env:K8S_NODE_NAME}"
+            action: insert
+          - key: k8s.cluster.name
+            value: "aegis"
+            action: insert
+
+    exporters:
+      # Direct to the AEGIS OTel Collector — bypasses NGINX/API gateway.
+      # X-Tenant-ID is set here because the gateway is what normally injects it.
+      # host.docker.internal resolves via Docker Desktop DNS (192.168.65.254).
+      # Port 4318 is host-exposed in docker-compose.override.yml.
+      otlp/collector:
+        endpoint: http://host.docker.internal:4318
+        headers:
+          X-Tenant-ID: "acme-corp"
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [kubeletstats]
+          processors: [resource/node, batch]
+          exporters: [otlp/collector]
+        logs:
+          receivers: [filelog]
+          processors: [resource/node, batch]
+          exporters: [otlp/collector]
+        logs/k8s_events:
+          receivers: [k8sobjects]
+          processors: [resource/node, batch]
+          exporters: [otlp/collector]
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-agent
+  namespace: otel-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-agent
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/stats, nodes/proxy, pods, namespaces, services, endpoints, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [daemonsets, deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-agent
+subjects:
+  - kind: ServiceAccount
+    name: otel-agent
+    namespace: otel-system
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-agent
+  namespace: otel-system
+spec:
+  selector:
+    matchLabels:
+      app: otel-agent
+  template:
+    metadata:
+      labels:
+        app: otel-agent
+    spec:
+      serviceAccountName: otel-agent
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: otel-agent
+          image: otel/opentelemetry-collector-contrib:0.100.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 100Mi
+            limits:
+              cpu: 200m
+              memory: 300Mi
+      volumes:
+        - name: config
+          configMap:
+            name: otel-agent-config
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers

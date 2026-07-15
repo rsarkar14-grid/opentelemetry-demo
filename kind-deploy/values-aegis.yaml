@@ -1,0 +1,83 @@
+# Helm values overlay — opentelemetry-demo + AEGIS fan-out
+#
+# Adds three parallel pipelines to the demo's OTel Collector that forward
+# all signals to the AEGIS observability stack via NGINX (tenant: acme-corp).
+# The demo's existing Jaeger / Prometheus / OpenSearch pipelines are unaffected.
+#
+# Usage:
+#   helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
+#     --namespace otel-demo --values kind-deploy/values-aegis.yaml
+#
+# Prerequisites:
+#   kubectl create secret generic aegis-credentials \
+#     --namespace otel-demo --from-literal=api-key=password
+#
+# Verify the top-level key matches your chart version before applying:
+#   helm show values open-telemetry/opentelemetry-demo \
+#     | grep -A5 "opentelemetry-collector:"
+
+opentelemetry-collector:
+  extraEnvs:
+    - name: AEGIS_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: aegis-credentials
+          key: api-key
+
+  config:
+    processors:
+      # Stamp forwarded signals with the AEGIS tenant as a resource attribute.
+      # The API gateway also injects X-Tenant-ID from the API key, but setting
+      # it here ensures it survives any further processing inside AEGIS's collector.
+      resource/aegis_tenant:
+        attributes:
+          - key: tenant_id
+            value: "acme-corp"
+            action: insert
+          - key: service.namespace
+            value: "opentelemetry-demo"
+            action: insert
+
+    exporters:
+      # Route directly to the AEGIS API gateway (HTTP, port 8000).
+      # HTTPS via NGINX (port 443) returns HTTP 400 with proto: illegal wireType 7
+      # because NGINX's HTTP/2 framing corrupts binary protobuf request bodies.
+      # Port 8000 is host-exposed in docker-compose.override.yml and handles
+      # X-AEGIS-API-KEY auth + X-Tenant-ID injection identically to NGINX.
+      # Reachability from kind pods confirmed: wget host.docker.internal:8000/health → 200.
+      otlphttp/aegis:
+        traces_endpoint: "http://host.docker.internal:8000/v1/telemetry/traces"
+        metrics_endpoint: "http://host.docker.internal:8000/v1/telemetry/metrics"
+        logs_endpoint: "http://host.docker.internal:8000/v1/telemetry/logs"
+        headers:
+          X-AEGIS-API-KEY: "${env:AEGIS_API_KEY}"
+        compression: none
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 500
+
+    service:
+      pipelines:
+        # Additive pipelines — the chart's existing traces/metrics/logs pipelines
+        # (Jaeger, Prometheus, OpenSearch) are not replaced.
+
+        traces/aegis:
+          receivers: [otlp]
+          processors: [resourcedetection, memory_limiter, transform, resource/aegis_tenant]
+          exporters: [otlphttp/aegis]
+
+        metrics/aegis:
+          receivers: [otlp]
+          processors: [resourcedetection, memory_limiter, resource/aegis_tenant]
+          exporters: [otlphttp/aegis]
+
+        logs/aegis:
+          receivers: [otlp]
+          processors: [resourcedetection, memory_limiter, resource/aegis_tenant]
+          exporters: [otlphttp/aegis]

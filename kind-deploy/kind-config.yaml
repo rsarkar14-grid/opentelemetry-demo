@@ -1,0 +1,47 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kind-aegis
+
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - "kind-aegis-control-plane"
+            - "localhost"
+            - "127.0.0.1"
+    extraPortMappings:
+      # API server — kubeconfig will use 127.0.0.1:6443
+      - containerPort: 6443
+        hostPort: 6443
+        protocol: TCP
+      # opentelemetry-demo frontend UI → http://localhost:30080
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
+      # Jaeger UI → http://localhost:30686
+      - containerPort: 30686
+        hostPort: 30686
+        protocol: TCP
+      # Locust load-generator UI → http://localhost:30089
+      - containerPort: 30089
+        hostPort: 30089
+        protocol: TCP
+      # General NodePort slots
+      - containerPort: 30000
+        hostPort: 30000
+        protocol: TCP
+      - containerPort: 30001
+        hostPort: 30001
+        protocol: TCP
+
+  # opentelemetry-demo runs 20+ services.
+  # Docker Desktop → Settings → Resources: allocate at least 8 GB RAM total.
+  - role: worker

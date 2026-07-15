@@ -2,32 +2,65 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Extras/customization layer for the OTel Collector.
-# Override this file in your fork to add exporters for your own observability backend.
 #
-# This file is intentionally empty. It is always loaded last, giving forks
-# a stable, well-defined seam to customize without touching upstream files.
+# AEGIS fan-out: adds three ADDITIVE pipelines (traces/aegis, metrics/aegis,
+# logs/aegis) that forward all OTLP signals to the AEGIS observability stack
+# via the AEGIS API gateway (host-exposed on :8000). The gateway authenticates
+# via X-AEGIS-API-KEY and injects X-Tenant-ID downstream.
 #
-# IMPORTANT: The OTel Collector merges config files but REPLACES arrays, not appends.
-# If you want to keep the default observability stack alongside your own exporters,
-# you must explicitly repeat the upstream exporter names in your pipeline definitions.
+# Additive pipelines mean the demo's own pipelines (debug, and — in the
+# observability flavor — Jaeger/Prometheus/OpenSearch) are untouched, so this
+# file works with every compose flavor. Mirrors kind-deploy/values-aegis.yaml
+# (the kind/Helm equivalent).
 #
-# Upstream exporter names (repeat these to keep them active):
-#   traces:  otlp_grpc/jaeger, debug, span_metrics
-#   metrics: otlp_http/prometheus, debug
-#   logs:    opensearch, debug
-#
-# Example:
-#
-# exporters:
-#   otlp_grpc/mybackend:
-#     endpoint: https://ingest.mybackend.com
-#
-# service:
-#   pipelines:
-#     traces:
-#       exporters: [otlp_grpc/jaeger, debug, span_metrics, otlp_grpc/mybackend]  # repeat upstream exporters
-#     metrics:
-#       receivers: [docker_stats, http_check/frontend-proxy, host_metrics, nginx, otlp, redis, span_metrics]
-#       exporters: [otlp_http/prometheus, debug, otlp_grpc/mybackend]           # repeat upstream exporters
-#     logs:
-#       exporters: [opensearch, debug, otlp_grpc/mybackend]                     # repeat upstream exporters
+# Configured via .env: AEGIS_GATEWAY_URL, AEGIS_TENANT_ID, AEGIS_API_KEY
+# (passed into the collector container by compose.yaml). The ${env:VAR:-default}
+# fallbacks below match the .env defaults.
+
+exporters:
+  # Route via the AEGIS API gateway (HTTP, port 8000), not NGINX :443 —
+  # NGINX's HTTP/2 framing corrupts binary protobuf request bodies.
+  otlphttp/aegis:
+    traces_endpoint: "${env:AEGIS_GATEWAY_URL:-http://host.docker.internal:8000}/v1/telemetry/traces"
+    metrics_endpoint: "${env:AEGIS_GATEWAY_URL:-http://host.docker.internal:8000}/v1/telemetry/metrics"
+    logs_endpoint: "${env:AEGIS_GATEWAY_URL:-http://host.docker.internal:8000}/v1/telemetry/logs"
+    headers:
+      X-AEGIS-API-KEY: "${env:AEGIS_API_KEY:-password}"
+    compression: none
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 120s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 500
+
+processors:
+  # Stamp forwarded signals with the AEGIS tenant as a resource attribute.
+  # The API gateway also injects X-Tenant-ID from the API key, but setting
+  # it here ensures it survives any further processing inside AEGIS's collector.
+  resource/aegis_tenant:
+    attributes:
+      - key: tenant_id
+        value: "${env:AEGIS_TENANT_ID:-acme-corp}"
+        action: insert
+      - key: service.namespace
+        value: "opentelemetry-demo"
+        action: insert
+
+service:
+  pipelines:
+    traces/aegis:
+      receivers: [otlp]
+      processors: [resourcedetection, memory_limiter, transform/sanitize_spans, resource/aegis_tenant]
+      exporters: [otlphttp/aegis]
+    metrics/aegis:
+      receivers: [otlp]
+      processors: [resourcedetection, memory_limiter, resource/aegis_tenant]
+      exporters: [otlphttp/aegis]
+    logs/aegis:
+      receivers: [otlp]
+      processors: [resourcedetection, memory_limiter, transform/sanitize_logs, resource/aegis_tenant]
+      exporters: [otlphttp/aegis]
