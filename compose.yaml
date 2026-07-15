@@ -847,6 +847,9 @@ services:
     logging: *logging
     environment:
       - AD_PROMETHEUS_PORT
+      - AEGIS_GATEWAY_URL
+      - AEGIS_TENANT_ID
+      - AEGIS_API_KEY
       - FRONTEND_PROXY_ADDR
       - HOST_FILESYSTEM
       - IMAGE_PROVIDER_HOST
