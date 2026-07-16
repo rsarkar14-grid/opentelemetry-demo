@@ -71,7 +71,7 @@ data:
       otlp/collector:
         endpoint: http://host.docker.internal:4318
         headers:
-          X-Tenant-ID: "acme-corp"
+          X-Tenant-ID: "jio-corp"
         tls:
           insecure: true
 
