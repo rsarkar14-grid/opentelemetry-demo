@@ -30,10 +30,6 @@ nodes:
       - containerPort: 30686
         hostPort: 30686
         protocol: TCP
-      # Locust load-generator UI → http://localhost:30089
-      - containerPort: 30089
-        hostPort: 30089
-        protocol: TCP
       # General NodePort slots
       - containerPort: 30000
         hostPort: 30000
@@ -43,5 +39,5 @@ nodes:
         protocol: TCP
 
   # opentelemetry-demo runs 20+ services.
-  # Docker Desktop → Settings → Resources: allocate at least 8 GB RAM total.
+  # Docker Desktop → Settings → Resources: allocate at least 12 GB RAM total.
   - role: worker

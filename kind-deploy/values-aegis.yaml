@@ -69,7 +69,7 @@ opentelemetry-collector:
 
         traces/aegis:
           receivers: [otlp]
-          processors: [resourcedetection, memory_limiter, transform, resource/aegis_tenant]
+          processors: [resourcedetection, memory_limiter, transform/sanitize_spans, resource/aegis_tenant]
           exporters: [otlphttp/aegis]
 
         metrics/aegis:

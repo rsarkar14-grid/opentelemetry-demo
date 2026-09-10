@@ -90,13 +90,13 @@ ok "Docker kubeconfig written to ${KUBECONFIG_DOCKER}"
 # These are what you paste into the frontend onboarding modal.
 log "Step 3 — Extracting ca_cert / client_cert / client_key to ${CREDS_DIR}..."
 mkdir -p "${CREDS_DIR}"
-KUBE_RAW=$(kind get kubeconfig --name "${CLUSTER_NAME}")
+KUBE_RAW_JSON=$(kubectl --kubeconfig="${KUBECONFIG_DOCKER}" config view --raw -o json)
 
 extract_pem() {
-  # $1 = python path into the kubeconfig dict yielding base64 PEM data
-  echo "$KUBE_RAW" | python3 -c "
-import sys, yaml, base64
-kc = yaml.safe_load(sys.stdin)
+  # $1 = Python path into the kubeconfig dict yielding base64 PEM data.
+  echo "$KUBE_RAW_JSON" | python3 -c "
+import sys, json, base64
+kc = json.load(sys.stdin)
 print(base64.b64decode($1).decode(), end='')
 "
 }
@@ -152,7 +152,8 @@ else
     --values "${SCRIPT_DIR}/values-aegis.yaml"
   ok "opentelemetry-demo deployed"
 
-  # Expose frontend, Jaeger, load-generator via NodePort
+  # Expose frontend and Jaeger via NodePort. The current load-generator is a
+  # headless k6 Deployment and intentionally has no Service or web UI.
   log "Patching services to NodePort..."
   patch_nodeport() {
     local svc=$1 port=$2 nodeport=$3
@@ -169,7 +170,6 @@ else
   }
   patch_nodeport "frontend-proxy" 8080  30080
   patch_nodeport "jaeger"         16686 30686
-  patch_nodeport "load-generator" 8089  30089
 fi
 
 # ── Summary — values to paste into the frontend onboarding modal ──────────────
@@ -195,7 +195,7 @@ echo ""
 if [[ "$SKIP_DEMO" != "--skip-demo" ]]; then
 echo "  Demo frontend     http://localhost:30080          (generates live telemetry)"
 echo "  Feature flags     http://localhost:30080/feature  (flagd-ui, toggle demo flags)"
-echo "  Load generator    http://localhost:30089          (Locust, control traffic load)"
+echo "  Load generator    headless k6 Deployment (runs automatically; no Service/UI)"
 echo "  Jaeger UI         http://localhost:30686          (in-cluster traces)"
 echo ""
 fi

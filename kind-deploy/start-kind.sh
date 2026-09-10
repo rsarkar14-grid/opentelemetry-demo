@@ -240,6 +240,8 @@ else
   fi
 
   # ── Step 10: Expose frontend and Jaeger via NodePort ────────────────────────
+  # The current load-generator is a headless k6 Deployment and intentionally
+  # has no Service or web UI.
   log "Step 10 — Patching services to NodePort..."
 
   patch_nodeport() {
@@ -261,7 +263,6 @@ else
   # Actual service names as deployed by the chart (no otel-demo- prefix)
   patch_nodeport "frontend-proxy" 8080  30080
   patch_nodeport "jaeger"         16686 30686
-  patch_nodeport "load-generator" 8089  30089
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -273,7 +274,7 @@ echo ""
 if [[ "$SKIP_DEMO" != "--skip-demo" ]]; then
 echo "  Demo frontend     http://localhost:30080          (generates live telemetry)"
 echo "  Feature flags     http://localhost:30080/feature  (flagd-ui, toggle demo flags)"
-echo "  Load generator    http://localhost:30089          (Locust, control traffic load)"
+echo "  Load generator    headless k6 Deployment (runs automatically; no Service/UI)"
 echo "  Jaeger UI         http://localhost:30686          (in-cluster traces)"
 echo ""
 fi

@@ -4,15 +4,25 @@
 #   kubectl apply -f kind-deploy/otel-daemonset.yaml
 #
 # One agent pod runs per node (kubeletstats + filelog).
-# k8sobjects (k8s Events) runs only on the control-plane node via nodeSelector
-# to avoid duplicate event streams from multiple agents.
-# Port 4318 must be host-exposed (docker-compose.override.yml handles this).
+# Both agents observe k8s Events, but a filter exports them only from the
+# control-plane agent to avoid duplicate event streams.
+# Telemetry is sent through the AEGIS API Gateway on host port 8000.
 
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: otel-system
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aegis-credentials
+  namespace: otel-system
+type: Opaque
+stringData:
+  api-key: password
 
 ---
 apiVersion: v1
@@ -41,8 +51,8 @@ data:
         include_file_name: false
 
       # k8s Events (CrashLoopBackOff, OOMKilled, image pull errors, etc.).
-      # Only active when K8S_EVENTS_ENABLED=true — set via env on the
-      # control-plane node pod only, preventing duplicate streams.
+      # Each agent observes them; filter/k8s_events_control_plane below drops
+      # the worker copy so only one event stream is exported.
       k8sobjects:
         auth_type: serviceAccount
         objects:
@@ -60,35 +70,52 @@ data:
             value: "${env:K8S_NODE_NAME}"
             action: insert
           - key: k8s.cluster.name
-            value: "aegis"
+            value: "kind-aegis"
             action: insert
+      resource/aegis_tenant:
+        attributes:
+          - key: tenant_id
+            value: "acme-corp"
+            action: upsert
+      filter/k8s_events_control_plane:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'resource.attributes["k8s.node.name"] != "kind-aegis-control-plane"'
 
     exporters:
-      # Direct to the AEGIS OTel Collector — bypasses NGINX/API gateway.
-      # X-Tenant-ID is set here because the gateway is what normally injects it.
-      # host.docker.internal resolves via Docker Desktop DNS (192.168.65.254).
-      # Port 4318 is host-exposed in docker-compose.override.yml.
-      otlp/collector:
-        endpoint: http://host.docker.internal:4318
+      # Send through the API Gateway so the API key is authenticated and the
+      # authoritative X-Tenant-ID header is injected before collector ingest.
+      otlphttp/aegis:
+        metrics_endpoint: http://host.docker.internal:8000/v1/telemetry/metrics
+        logs_endpoint: http://host.docker.internal:8000/v1/telemetry/logs
         headers:
-          X-Tenant-ID: "jio-corp"
-        tls:
-          insecure: true
+          X-AEGIS-API-KEY: "${env:AEGIS_API_KEY}"
+        compression: none
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 500
 
     service:
       pipelines:
         metrics:
           receivers: [kubeletstats]
-          processors: [resource/node, batch]
-          exporters: [otlp/collector]
+          processors: [resource/node, resource/aegis_tenant, batch]
+          exporters: [otlphttp/aegis]
         logs:
           receivers: [filelog]
-          processors: [resource/node, batch]
-          exporters: [otlp/collector]
+          processors: [resource/node, resource/aegis_tenant, batch]
+          exporters: [otlphttp/aegis]
         logs/k8s_events:
           receivers: [k8sobjects]
-          processors: [resource/node, batch]
-          exporters: [otlp/collector]
+          processors: [resource/node, filter/k8s_events_control_plane, resource/aegis_tenant, batch]
+          exporters: [otlphttp/aegis]
 
 ---
 apiVersion: v1
@@ -153,6 +180,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: AEGIS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-credentials
+                  key: api-key
           volumeMounts:
             - name: config
               mountPath: /conf
