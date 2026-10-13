@@ -79,26 +79,25 @@ ok "Stack started"
 # ── Step 4: Register cluster in PostgreSQL ───────────────────────────────────
 log "Step 4 — Registering kind cluster in k8s_clusters table..."
 
-# Extract CA cert, client cert, and client key from the kubeconfig
-KUBE_RAW=$(kind get kubeconfig --name "${CLUSTER_NAME}")
-CA_CERT=$(echo "$KUBE_RAW" | python3 -c "
-import sys, yaml, base64
+# Extract the CA cert, client cert and client key from the kubeconfig and encrypt
+# them with AEGIS's ENCRYPTION_KEY (k8s_clusters stores them Fernet-encrypted;
+# plaintext rows fail to load). Both steps run inside a running AEGIS container,
+# so the key never leaves it and the host needs no PyYAML.
+AEGIS_CRYPTO_CONTAINER="${AEGIS_CRYPTO_CONTAINER:-aegis-iam-service}"
+read -r CA_CERT CLIENT_CERT CLIENT_KEY < <(
+  kind get kubeconfig --name "${CLUSTER_NAME}" \
+    | docker exec -i "${AEGIS_CRYPTO_CONTAINER}" python -c '
+import base64, sys, yaml
+from shared.security.crypto import encrypt
 kc = yaml.safe_load(sys.stdin)
-ca_b64 = kc['clusters'][0]['cluster']['certificate-authority-data']
-print(base64.b64decode(ca_b64).decode())
-")
-CLIENT_CERT=$(echo "$KUBE_RAW" | python3 -c "
-import sys, yaml, base64
-kc = yaml.safe_load(sys.stdin)
-cert_b64 = kc['users'][0]['user']['client-certificate-data']
-print(base64.b64decode(cert_b64).decode())
-")
-CLIENT_KEY=$(echo "$KUBE_RAW" | python3 -c "
-import sys, yaml, base64
-kc = yaml.safe_load(sys.stdin)
-key_b64 = kc['users'][0]['user']['client-key-data']
-print(base64.b64decode(key_b64).decode())
-")
+pems = (kc["clusters"][0]["cluster"]["certificate-authority-data"],
+        kc["users"][0]["user"]["client-certificate-data"],
+        kc["users"][0]["user"]["client-key-data"])
+print(" ".join(encrypt(base64.b64decode(p).decode()) for p in pems))
+'
+) || true
+[[ -n "${CLIENT_KEY:-}" ]] \
+  || die "Could not encrypt the cluster credentials in ${AEGIS_CRYPTO_CONTAINER} (is the AEGIS stack up, with a valid ENCRYPTION_KEY?)"
 
 # Wait for PostgreSQL to be ready (docker compose up should have started it)
 for i in $(seq 1 15); do
