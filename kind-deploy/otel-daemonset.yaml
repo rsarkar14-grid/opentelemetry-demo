@@ -1,28 +1,27 @@
 # OTel DaemonSet — in-cluster agent for kubeletstats, container logs, and k8s events
 #
-# Deploy into the kind cluster:
-#   kubectl apply -f kind-deploy/otel-daemonset.yaml
+# Deploy into the kind cluster (start-kind.sh / setup-kind-cluster.sh do both steps):
+#   1. the `aegis-credentials` Secret in otel-system, holding an AEGIS API key with
+#      scope `agent` (telemetry push only) — never committed here:
+#        source kind-deploy/aegis-telemetry-key.sh   # mints or reuses the key
+#      or by hand:
+#        kubectl -n otel-system create secret generic aegis-credentials \
+#          --from-literal=api-key=<agent key from POST /v1/tenants/api-keys {"scope":"agent"}>
+#   2. kubectl apply -f kind-deploy/otel-daemonset.yaml
 #
 # One agent pod runs per node (kubeletstats + filelog).
 # Both agents observe k8s Events, but a filter exports them only from the
 # control-plane agent to avoid duplicate event streams.
-# Telemetry is sent through the AEGIS API Gateway on host port 8000.
+# Telemetry is sent through the AEGIS API Gateway on host port 8000 — the only way
+# in to AEGIS's collector, which is not published to the host. The gateway sets
+# the tenant from the API key; AEGIS's collector deletes any tenant_id in the
+# payload, so this agent does not set one.
 
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: otel-system
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aegis-credentials
-  namespace: otel-system
-type: Opaque
-stringData:
-  api-key: password
 
 ---
 apiVersion: v1
@@ -72,11 +71,6 @@ data:
           - key: k8s.cluster.name
             value: "kind-aegis"
             action: insert
-      resource/aegis_tenant:
-        attributes:
-          - key: tenant_id
-            value: "acme-corp"
-            action: upsert
       filter/k8s_events_control_plane:
         error_mode: ignore
         logs:
@@ -84,8 +78,9 @@ data:
             - 'resource.attributes["k8s.node.name"] != "kind-aegis-control-plane"'
 
     exporters:
-      # Send through the API Gateway so the API key is authenticated and the
-      # authoritative X-Tenant-ID header is injected before collector ingest.
+      # Send through the API Gateway so the API key (scope `agent`) is
+      # authenticated and the authoritative X-Tenant-ID header is injected
+      # before collector ingest.
       otlphttp/aegis:
         metrics_endpoint: http://host.docker.internal:8000/v1/telemetry/metrics
         logs_endpoint: http://host.docker.internal:8000/v1/telemetry/logs
@@ -106,15 +101,15 @@ data:
       pipelines:
         metrics:
           receivers: [kubeletstats]
-          processors: [resource/node, resource/aegis_tenant, batch]
+          processors: [resource/node, batch]
           exporters: [otlphttp/aegis]
         logs:
           receivers: [filelog]
-          processors: [resource/node, resource/aegis_tenant, batch]
+          processors: [resource/node, batch]
           exporters: [otlphttp/aegis]
         logs/k8s_events:
           receivers: [k8sobjects]
-          processors: [resource/node, filter/k8s_events_control_plane, resource/aegis_tenant, batch]
+          processors: [resource/node, filter/k8s_events_control_plane, batch]
           exporters: [otlphttp/aegis]
 
 ---

@@ -25,6 +25,9 @@ ok()   { echo -e "${GREEN}✓  $*${NC}"; }
 warn() { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()  { echo -e "${RED}✗  $*${NC}"; exit 1; }
 
+# shellcheck source=aegis-telemetry-key.sh
+source "${SCRIPT_DIR}/aegis-telemetry-key.sh"
+
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 log "Checking prerequisites..."
 for cmd in kind kubectl helm docker curl python3; do
@@ -167,6 +170,8 @@ done
 
 # ── Step 7: Deploy OTel DaemonSet ─────────────────────────────────────────────
 log "Step 7 — Deploying OTel DaemonSet (kubeletstats + filelog + k8s events)..."
+# The DaemonSet and the demo collector push to AEGIS with an `agent`-scoped key.
+apply_aegis_telemetry_credentials
 kubectl --context "${CONTEXT}" apply --validate=false -f "${SCRIPT_DIR}/otel-daemonset.yaml"
 kubectl --context "${CONTEXT}" -n otel-system rollout status daemonset/otel-agent --timeout=120s
 ok "OTel DaemonSet ready"
@@ -177,13 +182,10 @@ if [[ "$SKIP_DEMO" == "--skip-demo" ]]; then
 else
   log "Step 8 — Deploying opentelemetry-demo via Helm..."
 
-  # Namespace and Secret (idempotent)
+  # Namespace (idempotent)
   kubectl --context "${CONTEXT}" create namespace otel-demo --dry-run=client -o yaml \
     | kubectl --context "${CONTEXT}" apply --validate=false -f -
-  kubectl --context "${CONTEXT}" -n otel-demo create secret generic aegis-credentials \
-    --from-literal=api-key=password \
-    --dry-run=client -o yaml \
-    | kubectl --context "${CONTEXT}" apply --validate=false -f -
+  # aegis-credentials (agent-scoped key) was applied with the DaemonSet step.
 
   # Helm repo
   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts --force-update

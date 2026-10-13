@@ -8,9 +8,10 @@
 #   helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
 #     --namespace otel-demo --values kind-deploy/values-aegis.yaml
 #
-# Prerequisites:
+# Prerequisites (start-kind.sh / setup-kind-cluster.sh create it — see
+# aegis-telemetry-key.sh): an AEGIS API key with scope `agent` (telemetry push only):
 #   kubectl create secret generic aegis-credentials \
-#     --namespace otel-demo --from-literal=api-key=password
+#     --namespace otel-demo --from-literal=api-key=<agent key>
 #
 # Verify the top-level key matches your chart version before applying:
 #   helm show values open-telemetry/opentelemetry-demo \
@@ -26,14 +27,11 @@ opentelemetry-collector:
 
   config:
     processors:
-      # Stamp forwarded signals with the AEGIS tenant as a resource attribute.
-      # The API gateway also injects X-Tenant-ID from the API key, but setting
-      # it here ensures it survives any further processing inside AEGIS's collector.
+      # The tenant is NOT set here: the API gateway sets it from the API key, and
+      # AEGIS's collector deletes any tenant_id in the payload. service.namespace
+      # is what AEGIS scopes an application's telemetry by.
       resource/aegis_tenant:
         attributes:
-          - key: tenant_id
-            value: "acme-corp"
-            action: insert
           - key: service.namespace
             value: "opentelemetry-demo"
             action: insert
