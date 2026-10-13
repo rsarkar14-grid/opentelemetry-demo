@@ -1,0 +1,127 @@
+# aegis-rbac.yaml — read-only access for AEGIS + Kubernetes events collection
+#
+# Apply against demo-cluster ONLY:
+#   kubectl --context gke_gd-gcp-presales-india-auto-sre_us-central1-a_demo-cluster \
+#     apply -f aegis-rbac.yaml
+#
+# Creates:
+#   1. namespace aegis-access + ServiceAccount aegis-mcp-reader + read-only ClusterRole
+#      → lets the AEGIS Kubernetes MCP inspect this cluster
+#   2. ClusterRole/Binding for the otel-events collector in namespace otel-demo
+#      → lets it watch Kubernetes Events
+#
+# Deliberately NOT granted: secrets, and every write verb. See the request doc.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-access
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aegis-mcp-reader
+  namespace: aegis-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aegis-mcp-reader
+rules:
+  # Core workload + infrastructure state
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - nodes
+      - namespaces
+      - events
+      - configmaps
+      - persistentvolumeclaims
+      - persistentvolumes
+      - replicationcontrollers
+      - serviceaccounts
+      - limitranges
+      - resourcequotas
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments, replicasets, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: ["batch"]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: ["storage.k8s.io"]
+    resources: [storageclasses, volumeattachments]
+    verbs: [get, list, watch]
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: [pods, nodes]
+    verbs: [get, list]
+  - apiGroups: ["events.k8s.io"]
+    resources: [events]
+    verbs: [get, list, watch]
+  # NOTE: `secrets` is intentionally absent. The AEGIS Kubernetes MCP has a
+  # secret-listing tool; without this permission it returns a clean 403 instead
+  # of exposing credentials. Add it only if a demo scenario truly needs it.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aegis-mcp-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aegis-mcp-reader
+subjects:
+  - kind: ServiceAccount
+    name: aegis-mcp-reader
+    namespace: aegis-access
+---
+# Long-lived token for the ServiceAccount.
+# Kubernetes 1.24+ no longer auto-creates these, so it is declared explicitly.
+# Tradeoff: the token does not expire. It is read-only and revocable by deleting
+# this Secret. The permanent fix is Workload Identity (see the request doc).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aegis-mcp-reader-token
+  namespace: aegis-access
+  annotations:
+    kubernetes.io/service-account.name: aegis-mcp-reader
+type: kubernetes.io/service-account-token
+---
+# ── Kubernetes Events collector (namespace otel-demo) ────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-events
+rules:
+  - apiGroups: [""]
+    resources: [events, namespaces, pods, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: ["events.k8s.io"]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-events
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-events
+subjects:
+  - kind: ServiceAccount
+    name: otel-events
+    namespace: otel-demo
