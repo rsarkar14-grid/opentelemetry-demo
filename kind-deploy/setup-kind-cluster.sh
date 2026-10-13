@@ -46,8 +46,8 @@ ok()   { echo -e "${GREEN}✓  $*${NC}"; }
 warn() { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()  { echo -e "${RED}✗  $*${NC}"; exit 1; }
 
-# shellcheck source=aegis-telemetry-key.sh
-source "${SCRIPT_DIR}/aegis-telemetry-key.sh"
+# shellcheck source=aegis-gateway.sh
+source "${SCRIPT_DIR}/aegis-gateway.sh"
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 log "Checking prerequisites..."

@@ -9,7 +9,7 @@
 #     --namespace otel-demo --values kind-deploy/values-aegis.yaml
 #
 # Prerequisites (start-kind.sh / setup-kind-cluster.sh create it — see
-# aegis-telemetry-key.sh): an AEGIS API key with scope `agent` (telemetry push only):
+# aegis-gateway.sh): an AEGIS API key with scope `agent` (telemetry push only):
 #   kubectl create secret generic aegis-credentials \
 #     --namespace otel-demo --from-literal=api-key=<agent key>
 #

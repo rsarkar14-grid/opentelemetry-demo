@@ -25,8 +25,8 @@ ok()   { echo -e "${GREEN}✓  $*${NC}"; }
 warn() { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()  { echo -e "${RED}✗  $*${NC}"; exit 1; }
 
-# shellcheck source=aegis-telemetry-key.sh
-source "${SCRIPT_DIR}/aegis-telemetry-key.sh"
+# shellcheck source=aegis-gateway.sh
+source "${SCRIPT_DIR}/aegis-gateway.sh"
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 log "Checking prerequisites..."
@@ -134,37 +134,42 @@ ON CONFLICT (tenant_id, cluster_name) DO UPDATE SET
 EOSQL
 ok "Cluster '${CLUSTER_NAME}' registered in k8s_clusters (tenant=acme-corp)"
 
-# ── Step 5: Wait for IAM service ─────────────────────────────────────────────
-log "Step 5 — Waiting for IAM service..."
+# ── Step 5: Wait for the IAM service, through the gateway ────────────────────
+# iam-service is not published to the host; GET /v1/iam/apps exercises the
+# gateway, API-key auth and the IAM service end to end.
+log "Step 5 — Waiting for the IAM service (through the API gateway)..."
+use_aegis_admin_key
 for i in $(seq 1 30); do
-  STATUS=$(curl -sf http://localhost:8008/health 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null \
-    || true)
-  if [[ "$STATUS" == "ok" ]]; then
-    ok "IAM service is healthy"
+  CODE=$(aegis_curl GET /v1/iam/apps -o /dev/null -w "%{http_code}" 2>/dev/null || true)
+  if [[ "$CODE" == "200" ]]; then
+    ok "IAM service is reachable through the gateway"
     break
   fi
   if [[ $i -eq 30 ]]; then
-    die "IAM service not healthy after 60s. Debug: curl http://localhost:8008/health"
+    die "IAM service not reachable through the gateway after 60s (last HTTP ${CODE:-none}). Debug: curl ${AEGIS_GATEWAY_URL}/v1/iam/apps -H 'X-AEGIS-API-KEY: <admin key>'"
   fi
-  printf "  waiting for IAM service... (%d/30)\r" "$i"
+  printf "  waiting for the IAM service... (%d/30)\r" "$i"
   sleep 2
 done
 
-# ── Step 6: Wait for k8s-mcp to reach the cluster ────────────────────────────
-log "Step 6 — Waiting for k8s-mcp to reach the kind cluster..."
+# ── Step 6: Wait for AEGIS to reach the cluster, through the gateway ─────────
+# k8s-mcp is internal-only (mutual TLS). The BFF infrastructure view reaches the
+# cluster with the same k8s_clusters credentials, so nodes in its snapshot mean
+# AEGIS can reach the API server. (k8s-mcp loads new k8s_clusters rows on its
+# next registry refresh, within CLUSTER_REGISTRY_REFRESH_SEC = 60 s.)
+log "Step 6 — Waiting for AEGIS to reach the kind cluster (through the API gateway)..."
 for i in $(seq 1 30); do
-  STATUS=$(curl -sf http://localhost:8001/ready 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null \
+  NODES=$(aegis_curl GET "/v1/bff/infrastructure?cluster=${CLUSTER_NAME}" 2>/dev/null \
+    | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('nodes') or []))" 2>/dev/null \
     || true)
-  if [[ "$STATUS" == "ready" ]]; then
-    ok "k8s-mcp is ready"
+  if [[ "${NODES:-0}" -gt 0 ]]; then
+    ok "AEGIS reaches the kind cluster (${NODES} node(s))"
     break
   fi
   if [[ $i -eq 30 ]]; then
-    die "k8s-mcp not ready after 60s. Debug: curl http://localhost:8001/ready"
+    die "AEGIS cannot reach the kind cluster after 60s. Debug: curl '${AEGIS_GATEWAY_URL}/v1/bff/infrastructure?cluster=${CLUSTER_NAME}' -H 'X-AEGIS-API-KEY: <admin key>'; docker logs aegis-bff-service"
   fi
-  printf "  waiting for k8s-mcp... (%d/30)\r" "$i"
+  printf "  waiting for AEGIS to reach the cluster... (%d/30)\r" "$i"
   sleep 2
 done
 
@@ -217,13 +222,12 @@ else
     --values "${SCRIPT_DIR}/values-aegis.yaml"
   ok "opentelemetry-demo deployed"
 
-  # ── Step 9: Register opentelemetry-demo app via IAM service ────────────────
-  log "Step 9 — Registering opentelemetry-demo app via IAM service..."
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST http://localhost:8008/apps/register \
+  # ── Step 9: Register opentelemetry-demo app, through the gateway ────────────
+  # The tenant and the admin role come from the API key; the gateway never trusts
+  # a client-supplied X-Tenant-ID / X-Caller-Role.
+  log "Step 9 — Registering opentelemetry-demo app (through the API gateway)..."
+  HTTP_CODE=$(aegis_curl POST /v1/iam/apps/register -o /dev/null -w "%{http_code}" \
     -H "Content-Type: application/json" \
-    -H "X-Tenant-ID: acme-corp" \
-    -H "X-Caller-Role: admin" \
     -d '{
       "name": "opentelemetry-demo",
       "display_name": "OpenTelemetry Demo",
@@ -238,7 +242,7 @@ else
   elif [[ "$HTTP_CODE" == "409" ]]; then
     ok "opentelemetry-demo app already registered (409 — idempotent)"
   else
-    warn "App registration returned HTTP ${HTTP_CODE} (non-fatal — can be registered later via POST /apps/register)"
+    warn "App registration returned HTTP ${HTTP_CODE} (non-fatal — can be registered later via POST ${AEGIS_GATEWAY_URL}/v1/iam/apps/register)"
   fi
 
   # ── Step 10: Expose frontend and Jaeger via NodePort ────────────────────────
@@ -284,9 +288,10 @@ echo "  Grafana (apps)    http://localhost:3000    (external app telemetry)"
 echo "  Grafana (AEGIS)   http://localhost:3001    (AEGIS platform telemetry)"
 echo "  Prometheus        http://localhost:9090"
 echo "  AEGIS API         http://localhost:8000/health"
-echo "  IAM Service       http://localhost:8008/health"
-echo "  k8s-mcp           http://localhost:8001/ready"
-echo "  k8s-mcp clusters  http://localhost:8001/clusters"
+echo "  IAM apps          ${AEGIS_GATEWAY_URL}/v1/iam/apps                 (X-AEGIS-API-KEY: admin key)"
+echo "  Cluster snapshot  ${AEGIS_GATEWAY_URL}/v1/bff/infrastructure?cluster=${CLUSTER_NAME}"
+echo "  Clusters          ${AEGIS_GATEWAY_URL}/v1/bff/infrastructure/clusters"
+echo "  (internal services and MCP servers are not published; debug with docker compose exec)"
 echo ""
 echo "  kubectl context:  ${CONTEXT}"
 echo ""

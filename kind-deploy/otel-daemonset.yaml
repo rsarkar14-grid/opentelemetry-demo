@@ -3,7 +3,7 @@
 # Deploy into the kind cluster (start-kind.sh / setup-kind-cluster.sh do both steps):
 #   1. the `aegis-credentials` Secret in otel-system, holding an AEGIS API key with
 #      scope `agent` (telemetry push only) — never committed here:
-#        source kind-deploy/aegis-telemetry-key.sh   # mints or reuses the key
+#        source kind-deploy/aegis-gateway.sh   # mints or reuses the key
 #      or by hand:
 #        kubectl -n otel-system create secret generic aegis-credentials \
 #          --from-literal=api-key=<agent key from POST /v1/tenants/api-keys {"scope":"agent"}>
