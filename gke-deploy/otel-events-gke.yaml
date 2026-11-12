@@ -1,0 +1,148 @@
+# otel-events-gke.yaml — Kubernetes Events → AEGIS (single replica)
+#
+# WHY A SEPARATE DEPLOYMENT:
+# kind-deploy/otel-daemonset.yaml collected events with k8sobjects in a
+# DaemonSet and de-duplicated them with:
+#     resource.attributes["k8s.node.name"] != "kind-aegis-control-plane"
+# GKE has no control-plane node, so on GKE that filter matches every node and
+# DROPS ALL EVENTS — no CrashLoopBackOff / OOMKilled / ImagePullBackOff would
+# ever reach AEGIS. Those events are primary evidence for the RCA agent.
+# One replica watching the API server removes both the duplication and the bug.
+#
+# Node/kubelet/container metrics are NOT here: the demo chart's own collector
+# already runs as a DaemonSet with hostMetrics + kubeletMetrics + clusterMetrics
+# presets enabled.
+#
+# Apply:
+#   kubectl apply -f gke-deploy/otel-events-gke.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-events
+  namespace: otel-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-events
+rules:
+  - apiGroups: [""]
+    resources: [events, namespaces, pods, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: ["events.k8s.io"]
+    resources: [events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-events
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-events
+subjects:
+  - kind: ServiceAccount
+    name: otel-events
+    namespace: otel-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-events-config
+  namespace: otel-demo
+data:
+  config.yaml: |
+    receivers:
+      k8sobjects:
+        auth_type: serviceAccount
+        objects:
+          - name: events
+            mode: watch
+            group: ""
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      resource/aegis:
+        attributes:
+          - key: tenant_id
+            value: "acme-corp"
+            action: insert
+          - key: service.namespace
+            value: "opentelemetry-demo"
+            action: insert
+          - key: k8s.cluster.name
+            value: "demo-cluster"
+            action: insert
+          - key: service.name
+            value: "kubernetes-events"
+            action: insert
+      batch:
+        timeout: 5s
+
+    exporters:
+      otlphttp/aegis:
+        logs_endpoint: "https://aegis.griddynamics.net/v1/telemetry/logs"
+        headers:
+          X-AEGIS-API-KEY: "${env:AEGIS_API_KEY}"
+        compression: none
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 2
+          queue_size: 200
+
+    service:
+      pipelines:
+        logs:
+          receivers: [k8sobjects]
+          processors: [memory_limiter, resource/aegis, batch]
+          exporters: [otlphttp/aegis]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-events
+  namespace: otel-demo
+spec:
+  replicas: 1          # exactly one watcher — no duplicate event streams
+  selector:
+    matchLabels:
+      app: otel-events
+  template:
+    metadata:
+      labels:
+        app: otel-events
+    spec:
+      serviceAccountName: otel-events
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.160.0
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: AEGIS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-credentials
+                  key: api-key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: otel-events-config

@@ -1,0 +1,183 @@
+# values-aegis-gke.yaml — opentelemetry-demo → AEGIS fan-out (GKE)
+#
+# Verified against chart open-telemetry/opentelemetry-demo 0.41.1 (app 3.0.0).
+# Processor names below exist in that chart: memory_limiter, resourcedetection,
+# resource. NOTE: the old kind overlay referenced `transform/sanitize_spans`,
+# which no longer exists in 0.41.x (it is now transform/sanitize_logs) — do not
+# copy the kind file forward.
+#
+# Prerequisite (raw key never committed):
+#   kubectl create secret generic aegis-credentials -n otel-demo \
+#     --from-literal=api-key=<AEGIS tenant API key>
+#
+# Install:
+#   helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
+#     --version 0.41.1 -n otel-demo --create-namespace \
+#     -f gke-deploy/values-aegis-gke.yaml
+
+opentelemetry-collector:
+  # Collector memory: the chart default (400Mi) is not enough once the three
+  # AEGIS pipelines and filelog are added — the memory_limiter starts refusing
+  # data ("data refused due to high memory usage") and telemetry is dropped.
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  presets:
+    # DISABLED — the chart's logsCollection preset pulls in a ClusterRole
+    # (pods get/list/watch) for pod association, which this account cannot
+    # create. Container logs are collected by the hand-rolled `filelog/aegis`
+    # receiver below instead: it derives namespace/pod/container from the log
+    # FILE PATH via the `container` operator, so it needs no API access at all.
+    logsCollection:
+      enabled: false
+    # DISABLED — all three need cluster-scoped RBAC, which the deploying user
+    # does not have (roles/editor excludes container.clusterRoles.*). Left on,
+    # they log 403s every scrape interval and enrich nothing:
+    #   kubeletstats  → 403 nodes/stats
+    #   k8s_cluster   → 403 leases (leader election)
+    #   k8s_attributes→ 403 pods/namespaces
+    # Re-enable together with the RBAC grant (see README).
+    kubernetesAttributes:
+      enabled: false
+    kubeletMetrics:
+      enabled: false
+    clusterMetrics:
+      enabled: false
+    # Also RBAC-dependent: the receiver_creator needs a k8s observer (pods
+    # get/list/watch) to discover annotated scrape targets.
+    annotationDiscovery:
+      metrics:
+        enabled: false
+
+  # Host log directory for filelog/aegis (no RBAC needed — plain host files).
+  extraVolumes:
+    - name: varlog
+      hostPath:
+        path: /var/log
+  extraVolumeMounts:
+    - name: varlog
+      mountPath: /var/log
+      readOnly: true
+
+  extraEnvs:
+    - name: AEGIS_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: aegis-credentials
+          key: api-key
+
+  config:
+    receivers:
+      # Container logs without Kubernetes RBAC. The `container` operator parses
+      # /var/log/pods/<namespace>_<pod>_<uid>/<container>/N.log and sets
+      # k8s.namespace.name / k8s.pod.name / k8s.container.name from the path.
+      filelog/aegis:
+        include: [/var/log/pods/*/*/*.log]
+        exclude: [/var/log/pods/otel-demo_otel-collector*/*/*.log]
+        start_at: end
+        include_file_path: true
+        operators:
+          - type: container
+            id: container-parser
+
+    processors:
+      # Identifiers AEGIS joins on. These three MUST match the AEGIS records:
+      #   tenant_id        → tenants.tenant_id
+      #   service.namespace→ registered_apps.name
+      #   k8s.cluster.name → k8s_clusters.cluster_name
+      # service.namespace must NOT be "aegis": the AEGIS collector's
+      # filter/external_only drops anything in the aegis namespace.
+      resource/aegis:
+        attributes:
+          - key: tenant_id
+            value: "acme-corp"
+            action: insert
+          - key: service.namespace
+            value: "opentelemetry-demo"
+            action: insert
+          - key: k8s.cluster.name
+            value: "demo-cluster"
+            action: insert
+          # Static stand-in for the k8s_attributes enrichment that RBAC blocks.
+          # AEGIS tool_injector scopes Kubernetes queries by namespace.
+          - key: k8s.namespace.name
+            value: "otel-demo"
+            action: insert
+
+      batch/aegis:
+        timeout: 5s
+        send_batch_size: 1024
+
+    exporters:
+      # Straight to the AEGIS API gateway through the GKE ingress.
+      # The gateway authenticates the API key and injects the authoritative
+      # X-Tenant-ID before its collector ingests anything.
+      # compression: none — proven setting; binary protobuf through the proxy.
+      otlphttp/aegis:
+        traces_endpoint: "https://aegis.griddynamics.net/v1/telemetry/traces"
+        metrics_endpoint: "https://aegis.griddynamics.net/v1/telemetry/metrics"
+        logs_endpoint: "https://aegis.griddynamics.net/v1/telemetry/logs"
+        headers:
+          X-AEGIS-API-KEY: "${env:AEGIS_API_KEY}"
+        compression: none
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 500
+
+    service:
+      pipelines:
+        # Redirect the chart's own pipelines at AEGIS. Their default exporters
+        # (otlp_grpc/jaeger, otlp_http/prometheus, opensearch) point at services
+        # that are disabled above; leaving them would retry-spam every batch.
+        traces:
+          exporters: [span_metrics, debug]
+        metrics:
+          exporters: [debug]
+        logs:
+          exporters: [debug]
+
+        # Additive — the chart's own jaeger/prometheus/opensearch pipelines
+        # keep working unchanged.
+        traces/aegis:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, resource, resource/aegis, batch/aegis]
+          exporters: [otlphttp/aegis]
+
+        metrics/aegis:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, resource, resource/aegis, batch/aegis]
+          exporters: [otlphttp/aegis]
+
+        logs/aegis:
+          receivers: [otlp, filelog/aegis]
+          processors: [memory_limiter, resourcedetection, resource, resource/aegis, batch/aegis]
+          exporters: [otlphttp/aegis]
+
+# ── Bundled backends: OFF ─────────────────────────────────────────────────────
+# AEGIS is the observability backend for this demo, so the chart's own Jaeger /
+# Prometheus / Grafana / OpenSearch stack is redundant. Two concrete reasons to
+# disable it here:
+#   1. grafana + prometheus ship cluster-scoped ClusterRoles. The deploying user
+#      has roles/editor, which cannot create them, so `helm upgrade` fails on
+#      those objects alone.
+#   2. They cost ~4 vCPU / 6Gi on a 3-node cluster that is meant to run the demo.
+# NOTE: opensearch.clusterName defaults to "demo-cluster" in this chart — that is
+# an OpenSearch cluster name, unrelated to our GKE cluster of the same name.
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+opensearch:
+  enabled: false
