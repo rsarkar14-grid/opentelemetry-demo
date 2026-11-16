@@ -3,12 +3,17 @@
 # all telemetry to AEGIS.
 #
 # Usage:
+#   IMAGE_REPO=<registry>/<path>/demo IMAGE_TAG=<tag> \
 #   AEGIS_API_KEY=<tenant key> ./gke-deploy/deploy-gke.sh
 #
-# To run services built from this repo's source instead of the chart's images,
-# push them with build-push-images.sh and pass the same values here:
-#   IMAGE_REPO=<registry>/<path>/demo IMAGE_TAG=<tag> SOURCE_SERVICES="frontend" \
-#   AEGIS_API_KEY=... ./gke-deploy/deploy-gke.sh
+# The services in source-services.txt (override with SOURCE_SERVICES="a b") run
+# images built from this repo; push them first with build-push-images.sh using
+# the same IMAGE_REPO and IMAGE_TAG. The repo's flag file is used because its
+# flags are read by that code.
+#
+# CHART_IMAGES=1 runs the chart's published images (app 3.0.0) with the chart's
+# own flag file instead. No registry is needed, but flags added after 3.0.0 do
+# nothing.
 set -euo pipefail
 
 PROJECT="gd-gcp-presales-india-auto-sre"
@@ -22,9 +27,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 : "${AEGIS_API_KEY:?Set AEGIS_API_KEY to the AEGIS tenant API key}"
 
 IMAGE_ARGS=()
-if [[ -n "${IMAGE_REPO:-}" ]]; then
+if [[ -n "${CHART_IMAGES:-}" ]]; then
+  IMAGE_ARGS+=(--set-json 'components.flagd.additionalVolumes=[{"name":"config-ro","configMap":{"name":"flagd-config"}}]')
+else
+  : "${IMAGE_REPO:?Set IMAGE_REPO and IMAGE_TAG (see build-push-images.sh), or CHART_IMAGES=1 for the chart images}"
   : "${IMAGE_TAG:?Set IMAGE_TAG together with IMAGE_REPO}"
-  for svc in ${SOURCE_SERVICES:-frontend}; do
+  SOURCE_SERVICES="${SOURCE_SERVICES:-$(tr '\n' ' ' < "$SCRIPT_DIR/source-services.txt")}"
+  for svc in $SOURCE_SERVICES; do
     IMAGE_ARGS+=(
       --set-string "components.${svc}.imageOverride.repository=${IMAGE_REPO}"
       --set-string "components.${svc}.imageOverride.tag=${IMAGE_TAG}-${svc}"
@@ -43,10 +52,12 @@ kubectl create secret generic aegis-credentials -n "$NAMESPACE" \
   --from-literal=api-key="$AEGIS_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "==> Flag file from src/flagd/demo.flagd.json"
-kubectl create configmap flagd-config-main -n "$NAMESPACE" \
-  --from-file=demo.flagd.json="$REPO_ROOT/src/flagd/demo.flagd.json" \
-  --dry-run=client -o yaml | kubectl apply -f -
+if [[ -z "${CHART_IMAGES:-}" ]]; then
+  echo "==> Flag file from src/flagd/demo.flagd.json"
+  kubectl create configmap flagd-config-main -n "$NAMESPACE" \
+    --from-file=demo.flagd.json="$REPO_ROOT/src/flagd/demo.flagd.json" \
+    --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 echo "==> Helm repo"
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true

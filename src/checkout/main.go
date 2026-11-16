@@ -713,18 +713,6 @@ func (cs *checkout) sendToPostProcessor(ctx context.Context, result *pb.OrderRes
 		logger.Error(fmt.Sprintf("Failed to send message to Kafka within context deadline: %v", ctx.Err()))
 		return
 	}
-
-	ffValue := flags.KafkaQueueProblems.Value(ctx, openfeature.EvaluationContext{})
-	if ffValue > 0 {
-		logger.Info("Warning: FeatureFlag 'kafkaQueueProblems' is activated, overloading queue now.")
-		for range ffValue {
-			go func(msg sarama.ProducerMessage) {
-				cs.KafkaProducerClient.Input() <- &msg
-				<-cs.KafkaProducerClient.Successes()
-			}(msg)
-		}
-		logger.Info(fmt.Sprintf("Done with #%d messages for overload simulation.", ffValue))
-	}
 }
 
 func createProducerSpan(ctx context.Context, msg *sarama.ProducerMessage) trace.Span {

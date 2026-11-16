@@ -6,11 +6,6 @@
       "description": "emits raw PII attributes (user.email, demo.payment.card_number, demo.payment.card_cvv) for the collector redaction example",
       "flagType": "boolean"
     },
-    "kafkaQueueProblems": {
-      "defaultValue": 0,
-      "description": "simulates kafka queue problems",
-      "flagType": "integer"
-    },
     "paymentUnreachable": {
       "defaultValue": false,
       "description": "simulates payment unreachable issue",
