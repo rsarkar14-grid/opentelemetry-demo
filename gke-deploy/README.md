@@ -7,14 +7,23 @@ two things in them break on GKE (details below).
 |------|---------|
 | `values-aegis-gke.yaml` | Demo chart overlay: adds AEGIS traces/metrics/logs pipelines |
 | `otel-events-gke.yaml`  | Single-replica collector for Kubernetes Events |
+| `create-cluster.sh`     | Creates `demo-cluster` (3 × e2-standard-4 on `demo-subnet`, closed control plane) |
 | `deploy-gke.sh`         | One-shot deploy (credentials, secret, flag file, helm, cart probe, events collector) |
 | `cart-readiness-patch.yaml` | gRPC readiness probe for the cart, applied by `deploy-gke.sh` |
 | `build-push-images.sh`  | Builds services from this repo's source and pushes them to a registry |
 
 ## Quick start
 ```bash
+./gke-deploy/create-cluster.sh                                  # once; DRY_RUN=1 prints the command
+# someone with roles/container.admin applies gke-deploy/aegis-rbac.yaml
 AEGIS_API_KEY=<tenant key> ./gke-deploy/deploy-gke.sh
 ```
+
+`create-cluster.sh` allows the AEGIS ranges and this machine's public IP through the
+control plane. If your IP changes later, add it with `gcloud container clusters update
+demo-cluster --enable-master-authorized-networks --master-authorized-networks <all CIDRs>`;
+the flag replaces the whole list, so repeat the AEGIS ranges. `USE_SPOT=1` creates the
+nodes as Spot VMs.
 
 ## What runs on the cluster
 
