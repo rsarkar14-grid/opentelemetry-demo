@@ -181,3 +181,24 @@ grafana:
   enabled: false
 opensearch:
   enabled: false
+
+# ── Failure scenarios ─────────────────────────────────────────────────────────
+components:
+  flagd:
+    # Serve the flag file from this repo (src/flagd/demo.flagd.json), loaded by
+    # deploy-gke.sh as ConfigMap flagd-config-main, instead of the copy baked
+    # into the chart. The chart's copy lags the repo's flags.
+    additionalVolumes:
+      - name: config-ro
+        configMap:
+          name: flagd-config-main
+  frontend-proxy:
+    # The chart sets neither OTEL_SERVICE_NAMESPACE nor service.namespace in
+    # OTEL_RESOURCE_ATTRIBUTES for this pod. Envoy's access-log template reads
+    # OTEL_SERVICE_NAMESPACE, so its logs carried an empty service.namespace,
+    # which resource/aegis (action: insert) does not replace.
+    envOverrides:
+      - name: OTEL_SERVICE_NAMESPACE
+        value: opentelemetry-demo
+      - name: OTEL_RESOURCE_ATTRIBUTES_EXTRA
+        value: service.criticality=critical,service.namespace=opentelemetry-demo

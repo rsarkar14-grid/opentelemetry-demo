@@ -13,6 +13,11 @@
 # already runs as a DaemonSet with hostMetrics + kubeletMetrics + clusterMetrics
 # presets enabled.
 #
+# This file holds only namespaced objects, so roles/editor can apply it. The
+# ClusterRole and ClusterRoleBinding the collector needs are in aegis-rbac.yaml,
+# which requires roles/container.admin. Without them the collector starts but
+# its watch is denied and no events are sent.
+#
 # Apply:
 #   kubectl apply -f gke-deploy/otel-events-gke.yaml
 ---
@@ -21,31 +26,6 @@ kind: ServiceAccount
 metadata:
   name: otel-events
   namespace: otel-demo
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: otel-events
-rules:
-  - apiGroups: [""]
-    resources: [events, namespaces, pods, nodes]
-    verbs: [get, list, watch]
-  - apiGroups: ["events.k8s.io"]
-    resources: [events]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: otel-events
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: otel-events
-subjects:
-  - kind: ServiceAccount
-    name: otel-events
-    namespace: otel-demo
 ---
 apiVersion: v1
 kind: ConfigMap
