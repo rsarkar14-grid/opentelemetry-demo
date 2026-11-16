@@ -48,28 +48,6 @@ var EmitRawPii = struct {
 	},
 }
 
-// KafkaQueueProblems returns the value of the "kafkaQueueProblems" feature flag.
-// simulates kafka queue problems
-//
-// The flag is a type of integer and defaults to 0.
-var KafkaQueueProblems = struct {
-	fmt.Stringer
-	// Value returns the value of the [KafkaQueueProblems] flag.
-	Value evaluationValue[int64]
-
-	// ValueWithDetails returns the evaluation details of the [KafkaQueueProblems] flag
-	// and the evaluation error, if any.
-	ValueWithDetails evaluationDetails[int64]
-}{
-	Stringer: stringer("kafkaQueueProblems"),
-	Value: func(ctx context.Context, evalCtx openfeature.EvaluationContext) int64 {
-		return client.Int(ctx, "kafkaQueueProblems", 0, evalCtx)
-	},
-	ValueWithDetails: func(ctx context.Context, evalCtx openfeature.EvaluationContext) (openfeature.GenericEvaluationDetails[int64], error) {
-		return client.IntValueDetails(ctx, "kafkaQueueProblems", 0, evalCtx)
-	},
-}
-
 // PaymentUnreachable returns the value of the "paymentUnreachable" feature flag.
 // simulates payment unreachable issue
 //
