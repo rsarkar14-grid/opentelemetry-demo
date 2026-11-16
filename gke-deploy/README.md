@@ -7,12 +7,39 @@ two things in them break on GKE (details below).
 |------|---------|
 | `values-aegis-gke.yaml` | Demo chart overlay: adds AEGIS traces/metrics/logs pipelines |
 | `otel-events-gke.yaml`  | Single-replica collector for Kubernetes Events |
-| `deploy-gke.sh`         | One-shot deploy (credentials, secret, helm, events collector) |
+| `deploy-gke.sh`         | One-shot deploy (credentials, secret, flag file, helm, cart probe, events collector) |
+| `cart-readiness-patch.yaml` | gRPC readiness probe for the cart, applied by `deploy-gke.sh` |
+| `build-push-images.sh`  | Builds services from this repo's source and pushes them to a registry |
 
 ## Quick start
 ```bash
 AEGIS_API_KEY=<tenant key> ./gke-deploy/deploy-gke.sh
 ```
+
+## What runs on the cluster
+
+The chart pins `0.41.1` (app 3.0.0). Without further steps the cluster runs the
+chart's published images, not this repo's source. Two things do come from this repo:
+
+- **Flags**: `src/flagd/demo.flagd.json` is loaded as ConfigMap `flagd-config-main`
+  and mounted in place of the chart's copy. flagd reads it only at pod start, so
+  `deploy-gke.sh` restarts flagd; flag changes made in the flagd UI are lost on redeploy.
+- **Cart readiness**: the chart's values schema only allows `httpGet` probes and the
+  cart serves gRPC, so `deploy-gke.sh` patches a gRPC probe onto the Deployment.
+  Setting `failedReadinessProbe` then takes the cart out of the Service endpoints.
+
+To run services built from this repo's source, push them and deploy with the same
+repository and tag. The frontend must come from this repo: the chart's 3.0.0 frontend
+predates its OTLP log exporter, so it sends no logs.
+
+```bash
+export IMAGE_REPO=us-central1-docker.pkg.dev/<project>/<repository>/demo
+export IMAGE_TAG=$(git rev-parse --short HEAD)
+./gke-deploy/build-push-images.sh frontend
+SOURCE_SERVICES="frontend" AEGIS_API_KEY=<tenant key> ./gke-deploy/deploy-gke.sh
+```
+
+The registry repository must exist and the cluster nodes need pull access to it.
 
 ## What changed vs kind-deploy
 
