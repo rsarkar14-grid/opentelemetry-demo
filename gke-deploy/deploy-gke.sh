@@ -73,6 +73,8 @@ kubectl rollout restart deployment/flagd -n "$NAMESPACE"
 kubectl rollout status deployment/flagd -n "$NAMESPACE" --timeout=5m
 
 echo "==> Kubernetes events collector"
+kubectl get clusterrole otel-events >/dev/null 2>&1 || echo \
+  "WARNING: ClusterRole otel-events not found or not readable. Ask a roles/container.admin holder to apply gke-deploy/aegis-rbac.yaml, or no events will be sent."
 kubectl apply -f "$SCRIPT_DIR/otel-events-gke.yaml"
 
 echo "==> Waiting for pods"

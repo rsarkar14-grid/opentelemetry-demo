@@ -6,7 +6,7 @@ two things in them break on GKE (details below).
 | File | Purpose |
 |------|---------|
 | `values-aegis-gke.yaml` | Demo chart overlay: adds AEGIS traces/metrics/logs pipelines |
-| `otel-events-gke.yaml`  | Single-replica collector for Kubernetes Events |
+| `otel-events-gke.yaml`  | Single-replica collector for Kubernetes Events (namespaced objects only; its ClusterRole and binding are in `aegis-rbac.yaml`) |
 | `create-cluster.sh`     | Creates `demo-cluster` (3 × e2-standard-4 on `demo-subnet`, closed control plane) |
 | `deploy-gke.sh`         | One-shot deploy (credentials, secret, flag file, helm, cart probe, events collector) |
 | `cart-readiness-patch.yaml` | gRPC readiness probe for the cart, applied by `deploy-gke.sh` |
