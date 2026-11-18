@@ -202,3 +202,11 @@ components:
         value: opentelemetry-demo
       - name: OTEL_RESOURCE_ATTRIBUTES_EXTRA
         value: service.criticality=critical,service.namespace=opentelemetry-demo
+  agent:
+    # Kubernetes injects FLAGD_PORT=tcp://<ip>:8013 (from the flagd Service) into
+    # pods that do not set it, and the agent parses FLAGD_PORT as an integer.
+    envOverrides:
+      - name: FLAGD_HOST
+        value: flagd
+      - name: FLAGD_PORT
+        value: "8013"
