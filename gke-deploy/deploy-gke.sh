@@ -57,10 +57,19 @@ kubectl create secret generic aegis-credentials -n "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 if [[ -z "${CHART_IMAGES:-}" ]]; then
+  FLAG_FILE="$REPO_ROOT/src/flagd/demo.flagd.json"
+  # The chart's load generator is k6 and sends no traffic unless loadGeneratorTraffic
+  # exists. This repo's flag file lacks it because the repo's own generator is Locust.
+  if [[ " $SOURCE_SERVICES " != *" load-generator "* ]]; then
+    FLAG_FILE="$(mktemp)"
+    jq -s '.[0].flags += .[1].flags | .[0]' \
+      "$REPO_ROOT/src/flagd/demo.flagd.json" "$SCRIPT_DIR/k6-load-flags.json" > "$FLAG_FILE"
+  fi
   echo "==> Flag file from src/flagd/demo.flagd.json"
   kubectl create configmap flagd-config-main -n "$NAMESPACE" \
-    --from-file=demo.flagd.json="$REPO_ROOT/src/flagd/demo.flagd.json" \
+    --from-file=demo.flagd.json="$FLAG_FILE" \
     --dry-run=client -o yaml | kubectl apply -f -
+  [[ "$FLAG_FILE" == "$REPO_ROOT"/* ]] || rm -f "$FLAG_FILE"
 fi
 
 echo "==> Helm repo"
