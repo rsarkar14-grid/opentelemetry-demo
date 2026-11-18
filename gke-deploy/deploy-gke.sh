@@ -38,6 +38,10 @@ else
       --set-string "components.${svc}.imageOverride.repository=${IMAGE_REPO}"
       --set-string "components.${svc}.imageOverride.tag=${IMAGE_TAG}-${svc}"
     )
+    # The payment image sets NODE_OPTIONS itself; the chart's value would override it.
+    if [[ "$svc" == "payment" ]]; then
+      IMAGE_ARGS+=(--set-json 'components.payment.envOverrides=[{"name":"NODE_OPTIONS","value":"--require /otel-auto-instrumentation-nodejs/autoinstrumentation.js"}]')
+    fi
   done
 fi
 
